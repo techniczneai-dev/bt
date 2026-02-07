@@ -95,6 +95,14 @@ if (-not $settingsWindow) {
 if ($settingsWindow) {
     Write-Host 'Found Settings window'
 
+    # Przygotuj mouse_event
+    $signature = @'
+[DllImport(""user32.dll"")]
+public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+'@
+    $mouse = Add-Type -MemberDefinition $signature -Name 'MouseClick' -Namespace 'Win32API' -PassThru -ErrorAction SilentlyContinue
+    if (-not $mouse) { $mouse = [Win32API.MouseClick] }
+
     # Szukaj elementu z nazwą urządzenia
     Start-Sleep -Seconds 1
 
@@ -123,12 +131,7 @@ if ($settingsWindow) {
             $y = [int]($rect.Y + $rect.Height / 2)
 
             [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
-
-            $signature = @'
-[DllImport(""user32.dll"")]
-public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
-'@
-            $mouse = Add-Type -MemberDefinition $signature -Name 'Mouse' -Namespace 'Win32' -PassThru
+            Start-Sleep -Milliseconds 100
             $mouse::mouse_event(0x0002, 0, 0, 0, 0) # MOUSEEVENTF_LEFTDOWN
             $mouse::mouse_event(0x0004, 0, 0, 0, 0) # MOUSEEVENTF_LEFTUP
             Start-Sleep -Milliseconds 500
@@ -137,24 +140,46 @@ public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, i
         # Szukaj przycisku Connect/Połącz
         Start-Sleep -Milliseconds 500
 
-        $connectNames = @('Connect', 'Połącz', 'Podłącz')
-        foreach ($name in $connectNames) {
-            $btnCondition = New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::NameProperty,
-                $name
-            )
-            $connectBtn = $settingsWindow.FindFirst(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                $btnCondition
-            )
-            if ($connectBtn) {
-                Write-Host ""Found Connect button: $name""
-                $invokePattern = $connectBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                if ($invokePattern) {
-                    $invokePattern.Invoke()
-                    Write-Host 'Clicked Connect'
+        # Szukaj przycisku Connect - przez typ Button i nazwe zawierajaca connect/polacz
+        $btnCondition = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Button
+        )
+        $allButtons = $settingsWindow.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            $btnCondition
+        )
+
+        foreach ($btn in $allButtons) {
+            $btnName = $btn.Current.Name
+            if ($btnName -and ($btnName -like '*onnect*' -or $btnName -like '*łącz*' -or $btnName -like '*olacz*')) {
+                # Pomijamy Disconnect
+                if ($btnName -notlike '*isconnect*' -and $btnName -notlike '*ozłącz*' -and $btnName -notlike '*ozlacz*') {
+                    Write-Host ""Found Connect button: $btnName""
+
+                    # Sprobuj Invoke
+                    try {
+                        $invokePattern = $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                        if ($invokePattern) {
+                            $invokePattern.Invoke()
+                            Write-Host 'Clicked Connect via Invoke'
+                            break
+                        }
+                    } catch {
+                        # Kliknij myszka
+                        $rect = $btn.Current.BoundingRectangle
+                        if ($rect.Width -gt 0) {
+                            $x = [int]($rect.X + $rect.Width / 2)
+                            $y = [int]($rect.Y + $rect.Height / 2)
+                            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
+                            Start-Sleep -Milliseconds 100
+                            $mouse::mouse_event(0x0002, 0, 0, 0, 0)
+                            $mouse::mouse_event(0x0004, 0, 0, 0, 0)
+                            Write-Host 'Clicked Connect via mouse'
+                            break
+                        }
+                    }
                 }
-                break
             }
         }
     } else {
@@ -181,40 +206,34 @@ public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, i
 
                     [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
                     Start-Sleep -Milliseconds 100
-
-                    $signature = @'
-[DllImport(""user32.dll"")]
-public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
-'@
-                    $mouse = Add-Type -MemberDefinition $signature -Name 'Mouse2' -Namespace 'Win32' -PassThru -ErrorAction SilentlyContinue
-                    if (-not $mouse) {
-                        $mouse = [Win32.Mouse2]
-                    }
                     $mouse::mouse_event(0x0002, 0, 0, 0, 0)
                     $mouse::mouse_event(0x0004, 0, 0, 0, 0)
 
                     Start-Sleep -Seconds 1
 
-                    # Szukaj Connect
-                    foreach ($name in @('Connect', 'Połącz')) {
-                        $btnCondition = New-Object System.Windows.Automation.PropertyCondition(
-                            [System.Windows.Automation.AutomationElement]::NameProperty,
-                            $name
-                        )
-                        $connectBtn = $settingsWindow.FindFirst(
-                            [System.Windows.Automation.TreeScope]::Descendants,
-                            $btnCondition
-                        )
-                        if ($connectBtn) {
-                            $rect2 = $connectBtn.Current.BoundingRectangle
-                            $x2 = [int]($rect2.X + $rect2.Width / 2)
-                            $y2 = [int]($rect2.Y + $rect2.Height / 2)
-                            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x2, $y2)
-                            Start-Sleep -Milliseconds 100
-                            $mouse::mouse_event(0x0002, 0, 0, 0, 0)
-                            $mouse::mouse_event(0x0004, 0, 0, 0, 0)
-                            Write-Host 'Clicked Connect button'
-                            break
+                    # Szukaj Connect - przez wszystkie przyciski
+                    $btnCond = New-Object System.Windows.Automation.PropertyCondition(
+                        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                        [System.Windows.Automation.ControlType]::Button
+                    )
+                    $btns = $settingsWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond)
+
+                    foreach ($b in $btns) {
+                        $bName = $b.Current.Name
+                        if ($bName -and ($bName -like '*onnect*' -or $bName -like '*łącz*' -or $bName -like '*olacz*')) {
+                            if ($bName -notlike '*isconnect*' -and $bName -notlike '*ozłącz*') {
+                                $rect2 = $b.Current.BoundingRectangle
+                                if ($rect2.Width -gt 0) {
+                                    $x2 = [int]($rect2.X + $rect2.Width / 2)
+                                    $y2 = [int]($rect2.Y + $rect2.Height / 2)
+                                    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x2, $y2)
+                                    Start-Sleep -Milliseconds 100
+                                    $mouse::mouse_event(0x0002, 0, 0, 0, 0)
+                                    $mouse::mouse_event(0x0004, 0, 0, 0, 0)
+                                    Write-Host ""Clicked Connect button: $bName""
+                                    break
+                                }
+                            }
                         }
                     }
                     break
