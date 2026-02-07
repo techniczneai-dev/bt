@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using SonyBTConnect.Interop;
 
@@ -21,38 +22,244 @@ public class BluetoothConnectionService : IBluetoothConnectionService
 
     public async Task<ConnectionResult> ConnectAsync()
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            Debug.WriteLine("Starting connection attempt...");
+
+            if (CheckIfConnected())
             {
-                // Sprawdź czy już połączony
+                Debug.WriteLine("Already connected");
+                UpdateConnectionStatus(true);
+                return ConnectionResult.AlreadyConnected;
+            }
+
+            // Użyj UI Automation przez PowerShell
+            await ConnectViaUIAutomationAsync();
+
+            // Czekaj na połączenie (max 10 sekund)
+            for (int i = 0; i < 10; i++)
+            {
+                await Task.Delay(1000);
                 if (CheckIfConnected())
                 {
                     UpdateConnectionStatus(true);
-                    return ConnectionResult.AlreadyConnected;
+                    return ConnectionResult.Success;
                 }
-
-                // Znajdź urządzenie i połącz
-                var result = FindAndConnectDevice();
-
-                if (result == ConnectionResult.Success)
-                {
-                    // Daj czas na połączenie
-                    Thread.Sleep(1000);
-                    UpdateConnectionStatus(CheckIfConnected());
-                }
-
-                return result;
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Connect error: {ex.Message}");
-                return ConnectionResult.BluetoothError;
-            }
-        });
+
+            return ConnectionResult.ConnectionFailed;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Connect error: {ex.Message}");
+            return ConnectionResult.BluetoothError;
+        }
     }
 
-    private ConnectionResult FindAndConnectDevice()
+    private async Task ConnectViaUIAutomationAsync()
+    {
+        // Skrypt PowerShell z UI Automation
+        string script = @"
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+
+$deviceName = 'WH-1000XM5'
+
+# Otwórz ustawienia Bluetooth
+Start-Process 'ms-settings:bluetooth'
+Start-Sleep -Seconds 2
+
+# Znajdź okno ustawień
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$condition = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::NameProperty,
+    'Settings'
+)
+$settingsWindow = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
+
+if (-not $settingsWindow) {
+    $condition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ClassNameProperty,
+        'ApplicationFrameWindow'
+    )
+    $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
+    foreach ($win in $windows) {
+        if ($win.Current.Name -like '*Settings*' -or $win.Current.Name -like '*Ustawienia*') {
+            $settingsWindow = $win
+            break
+        }
+    }
+}
+
+if ($settingsWindow) {
+    Write-Host 'Found Settings window'
+
+    # Szukaj elementu z nazwą urządzenia
+    Start-Sleep -Seconds 1
+
+    $nameCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::NameProperty,
+        $deviceName
+    )
+
+    $deviceElement = $settingsWindow.FindFirst(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        $nameCondition
+    )
+
+    if ($deviceElement) {
+        Write-Host 'Found device element'
+
+        # Kliknij na urządzenie
+        $invokePattern = $deviceElement.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        if ($invokePattern) {
+            $invokePattern.Invoke()
+            Start-Sleep -Milliseconds 500
+        } else {
+            # Spróbuj kliknąć przez pozycję
+            $rect = $deviceElement.Current.BoundingRectangle
+            $x = [int]($rect.X + $rect.Width / 2)
+            $y = [int]($rect.Y + $rect.Height / 2)
+
+            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
+
+            $signature = @'
+[DllImport(""user32.dll"")]
+public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+'@
+            $mouse = Add-Type -MemberDefinition $signature -Name 'Mouse' -Namespace 'Win32' -PassThru
+            $mouse::mouse_event(0x0002, 0, 0, 0, 0) # MOUSEEVENTF_LEFTDOWN
+            $mouse::mouse_event(0x0004, 0, 0, 0, 0) # MOUSEEVENTF_LEFTUP
+            Start-Sleep -Milliseconds 500
+        }
+
+        # Szukaj przycisku Connect/Połącz
+        Start-Sleep -Milliseconds 500
+
+        $connectNames = @('Connect', 'Połącz', 'Podłącz')
+        foreach ($name in $connectNames) {
+            $btnCondition = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty,
+                $name
+            )
+            $connectBtn = $settingsWindow.FindFirst(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $btnCondition
+            )
+            if ($connectBtn) {
+                Write-Host ""Found Connect button: $name""
+                $invokePattern = $connectBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                if ($invokePattern) {
+                    $invokePattern.Invoke()
+                    Write-Host 'Clicked Connect'
+                }
+                break
+            }
+        }
+    } else {
+        Write-Host 'Device element not found, trying alternative method'
+
+        # Alternatywna metoda - szukaj wszystkich elementów i znajdź po tekście
+        $allCondition = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::IsEnabledProperty,
+            $true
+        )
+        $allElements = $settingsWindow.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            $allCondition
+        )
+
+        foreach ($elem in $allElements) {
+            if ($elem.Current.Name -like ""*$deviceName*"") {
+                Write-Host ""Found element with device name: $($elem.Current.Name)""
+
+                $rect = $elem.Current.BoundingRectangle
+                if ($rect.Width -gt 0) {
+                    $x = [int]($rect.X + $rect.Width / 2)
+                    $y = [int]($rect.Y + $rect.Height / 2)
+
+                    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
+                    Start-Sleep -Milliseconds 100
+
+                    $signature = @'
+[DllImport(""user32.dll"")]
+public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+'@
+                    $mouse = Add-Type -MemberDefinition $signature -Name 'Mouse2' -Namespace 'Win32' -PassThru -ErrorAction SilentlyContinue
+                    if (-not $mouse) {
+                        $mouse = [Win32.Mouse2]
+                    }
+                    $mouse::mouse_event(0x0002, 0, 0, 0, 0)
+                    $mouse::mouse_event(0x0004, 0, 0, 0, 0)
+
+                    Start-Sleep -Seconds 1
+
+                    # Szukaj Connect
+                    foreach ($name in @('Connect', 'Połącz')) {
+                        $btnCondition = New-Object System.Windows.Automation.PropertyCondition(
+                            [System.Windows.Automation.AutomationElement]::NameProperty,
+                            $name
+                        )
+                        $connectBtn = $settingsWindow.FindFirst(
+                            [System.Windows.Automation.TreeScope]::Descendants,
+                            $btnCondition
+                        )
+                        if ($connectBtn) {
+                            $rect2 = $connectBtn.Current.BoundingRectangle
+                            $x2 = [int]($rect2.X + $rect2.Width / 2)
+                            $y2 = [int]($rect2.Y + $rect2.Height / 2)
+                            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x2, $y2)
+                            Start-Sleep -Milliseconds 100
+                            $mouse::mouse_event(0x0002, 0, 0, 0, 0)
+                            $mouse::mouse_event(0x0004, 0, 0, 0, 0)
+                            Write-Host 'Clicked Connect button'
+                            break
+                        }
+                    }
+                    break
+                }
+            }
+        }
+    }
+
+    # Zamknij ustawienia po chwili
+    Start-Sleep -Seconds 3
+    Stop-Process -Name 'SystemSettings' -ErrorAction SilentlyContinue
+} else {
+    Write-Host 'Settings window not found'
+}
+";
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = "powershell",
+            Arguments = $"-ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = Process.Start(psi);
+        if (process != null)
+        {
+            string output = await process.StandardOutput.ReadToEndAsync();
+            string error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            Debug.WriteLine($"UI Automation output: {output}");
+            if (!string.IsNullOrEmpty(error))
+                Debug.WriteLine($"UI Automation error: {error}");
+        }
+    }
+
+    private bool CheckIfConnected()
+    {
+        return CheckIfConnectedViaAudioEndpoints();
+    }
+
+    private bool CheckIfConnectedViaAudioEndpoints()
     {
         IMMDeviceEnumerator? enumerator = null;
         IMMDeviceCollection? devices = null;
@@ -60,20 +267,11 @@ public class BluetoothConnectionService : IBluetoothConnectionService
         try
         {
             enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorClass();
+            int hr = enumerator.EnumAudioEndpoints(EDataFlow.eRender, DeviceState.DEVICE_STATE_ACTIVE, out devices);
 
-            // Znajdź wszystkie audio endpoints (włącznie z niepodłączonymi)
-            int hr = enumerator.EnumAudioEndpoints(
-                EDataFlow.eRender,
-                DeviceState.DEVICE_STATEMASK_ALL,
-                out devices);
-
-            if (hr != 0 || devices == null)
-            {
-                return ConnectionResult.BluetoothError;
-            }
+            if (hr != 0 || devices == null) return false;
 
             devices.GetCount(out uint count);
-            System.Diagnostics.Debug.WriteLine($"Found {count} audio endpoints");
 
             for (uint i = 0; i < count; i++)
             {
@@ -83,177 +281,24 @@ public class BluetoothConnectionService : IBluetoothConnectionService
                 try
                 {
                     string? deviceName = GetDeviceFriendlyName(device);
-                    System.Diagnostics.Debug.WriteLine($"Device {i}: {deviceName}");
-
                     if (deviceName != null && deviceName.Contains(DEVICE_NAME, StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Sprawdź stan urządzenia
-                        device.GetState(out uint state);
-
-                        if (state == DeviceState.DEVICE_STATE_ACTIVE)
-                        {
-                            System.Diagnostics.Debug.WriteLine("Device already connected");
-                            return ConnectionResult.AlreadyConnected;
-                        }
-
-                        // Próba połączenia przez IKsControl
-                        bool connected = TryConnectViaKsControl(device);
-                        if (connected)
-                        {
-                            return ConnectionResult.Success;
-                        }
-
-                        // Fallback: próba przez DeviceTopology
-                        connected = TryConnectViaDeviceTopology(device);
-                        if (connected)
-                        {
-                            return ConnectionResult.Success;
-                        }
-                    }
+                        return true;
                 }
                 finally
                 {
-                    if (device != null)
-                        Marshal.ReleaseComObject(device);
+                    Marshal.ReleaseComObject(device);
                 }
             }
-
-            return ConnectionResult.DeviceNotFound;
+            return false;
+        }
+        catch
+        {
+            return false;
         }
         finally
         {
-            if (devices != null)
-                Marshal.ReleaseComObject(devices);
-            if (enumerator != null)
-                Marshal.ReleaseComObject(enumerator);
-        }
-    }
-
-    private bool TryConnectViaKsControl(IMMDevice device)
-    {
-        try
-        {
-            // Próba bezpośredniej aktywacji IKsControl
-            Guid iidKsControl = AudioGuids.IID_IKsControl;
-            int hr = device.Activate(
-                ref iidKsControl,
-                ClsCtx.CLSCTX_ALL,
-                IntPtr.Zero,
-                out var ksControlObj);
-
-            if (hr == 0 && ksControlObj != null)
-            {
-                var ksControl = (IKsControl)ksControlObj;
-                bool result = SendReconnectCommand(ksControl);
-                Marshal.ReleaseComObject(ksControlObj);
-                return result;
-            }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"TryConnectViaKsControl error: {ex.Message}");
-        }
-        return false;
-    }
-
-    private bool TryConnectViaDeviceTopology(IMMDevice device)
-    {
-        try
-        {
-            // Aktywuj IDeviceTopology
-            Guid iidTopology = AudioGuids.IID_IDeviceTopology;
-            int hr = device.Activate(
-                ref iidTopology,
-                ClsCtx.CLSCTX_ALL,
-                IntPtr.Zero,
-                out var topologyObj);
-
-            if (hr != 0 || topologyObj == null)
-                return false;
-
-            var topology = (IDeviceTopology)topologyObj;
-
-            try
-            {
-                topology.GetConnectorCount(out uint connectorCount);
-                System.Diagnostics.Debug.WriteLine($"Device has {connectorCount} connectors");
-
-                for (uint j = 0; j < connectorCount; j++)
-                {
-                    hr = topology.GetConnector(j, out var connector);
-                    if (hr != 0 || connector == null) continue;
-
-                    try
-                    {
-                        // Sprawdź czy connector jest podłączony
-                        connector.IsConnected(out bool isConnected);
-
-                        if (!isConnected)
-                        {
-                            // Pobierz connected device
-                            hr = connector.GetConnectedTo(out var connectedTo);
-                            if (hr == 0 && connectedTo != null)
-                            {
-                                // Spróbuj uzyskać IKsControl z connected device
-                                if (connectedTo is IPart part)
-                                {
-                                    Guid iidKsControl = AudioGuids.IID_IKsControl;
-                                    hr = part.Activate(ClsCtx.CLSCTX_ALL, ref iidKsControl, out var ksObj);
-                                    if (hr == 0 && ksObj != null)
-                                    {
-                                        var ksControl = (IKsControl)ksObj;
-                                        bool result = SendReconnectCommand(ksControl);
-                                        Marshal.ReleaseComObject(ksObj);
-                                        if (result) return true;
-                                    }
-                                }
-                                Marshal.ReleaseComObject(connectedTo);
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        Marshal.ReleaseComObject(connector);
-                    }
-                }
-            }
-            finally
-            {
-                Marshal.ReleaseComObject(topologyObj);
-            }
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"TryConnectViaDeviceTopology error: {ex.Message}");
-        }
-        return false;
-    }
-
-    private bool SendReconnectCommand(IKsControl ksControl)
-    {
-        try
-        {
-            var property = new KsProperty
-            {
-                Set = KsPropertyIds.KSPROPSETID_BtAudio,
-                Id = KsPropertyIds.KSPROPERTY_ONESHOT_RECONNECT,
-                Flags = KsPropertyIds.KSPROPERTY_TYPE_SET | KsPropertyIds.KSPROPERTY_TYPE_TOPOLOGY
-            };
-
-            int hr = ksControl.KsProperty(
-                ref property,
-                (uint)Marshal.SizeOf<KsProperty>(),
-                IntPtr.Zero,
-                0,
-                out _);
-
-            System.Diagnostics.Debug.WriteLine($"KsProperty reconnect result: 0x{hr:X8}");
-            return hr >= 0;
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"SendReconnectCommand error: {ex.Message}");
-            return false;
+            if (devices != null) Marshal.ReleaseComObject(devices);
+            if (enumerator != null) Marshal.ReleaseComObject(enumerator);
         }
     }
 
@@ -281,60 +326,6 @@ public class BluetoothConnectionService : IBluetoothConnectionService
         }
     }
 
-    private bool CheckIfConnected()
-    {
-        IMMDeviceEnumerator? enumerator = null;
-        IMMDeviceCollection? devices = null;
-
-        try
-        {
-            enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorClass();
-
-            // Pobierz tylko aktywne urządzenia
-            int hr = enumerator.EnumAudioEndpoints(
-                EDataFlow.eRender,
-                DeviceState.DEVICE_STATE_ACTIVE,
-                out devices);
-
-            if (hr != 0 || devices == null)
-                return false;
-
-            devices.GetCount(out uint count);
-
-            for (uint i = 0; i < count; i++)
-            {
-                devices.Item(i, out var device);
-                if (device == null) continue;
-
-                try
-                {
-                    string? deviceName = GetDeviceFriendlyName(device);
-                    if (deviceName != null && deviceName.Contains(DEVICE_NAME, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return true;
-                    }
-                }
-                finally
-                {
-                    Marshal.ReleaseComObject(device);
-                }
-            }
-
-            return false;
-        }
-        catch
-        {
-            return false;
-        }
-        finally
-        {
-            if (devices != null)
-                Marshal.ReleaseComObject(devices);
-            if (enumerator != null)
-                Marshal.ReleaseComObject(enumerator);
-        }
-    }
-
     private void CheckConnectionStatus(object? state)
     {
         try
@@ -342,10 +333,7 @@ public class BluetoothConnectionService : IBluetoothConnectionService
             bool nowConnected = CheckIfConnected();
             UpdateConnectionStatus(nowConnected);
         }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"CheckConnectionStatus error: {ex.Message}");
-        }
+        catch { }
     }
 
     private void UpdateConnectionStatus(bool connected)
@@ -359,7 +347,7 @@ public class BluetoothConnectionService : IBluetoothConnectionService
 
     public void StartMonitoring()
     {
-        _statusCheckTimer.Change(0, 2000); // Sprawdzaj co 2 sekundy
+        _statusCheckTimer.Change(0, 2000);
     }
 
     public void StopMonitoring()
