@@ -11,15 +11,15 @@
 
         <!-- Menu kontekstowe -->
         <ContextMenu x:Key="TrayMenu">
-            <MenuItem Header="Polacz sluchawki"
+            <MenuItem Header="Connect headphones"
                       Command="{Binding ConnectCommand}"
                       IsEnabled="{Binding IsConnecting, Converter={StaticResource InverseBoolConverter}}" />
             <Separator />
-            <MenuItem Header="Autostart z Windows"
+            <MenuItem Header="Start with Windows"
                       IsCheckable="True"
                       IsChecked="{Binding IsAutoStartEnabled, Mode=TwoWay}" />
             <Separator />
-            <MenuItem Header="Zamknij"
+            <MenuItem Header="Exit"
                       Command="{Binding ExitCommand}" />
         </ContextMenu>
 

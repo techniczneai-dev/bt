@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using SonyBTConnect.Interop;
 
@@ -33,17 +34,30 @@ public class BluetoothConnectionService : IBluetoothConnectionService
                 return ConnectionResult.AlreadyConnected;
             }
 
-            // Użyj UI Automation przez PowerShell
-            await ConnectViaUIAutomationAsync();
-
-            // Czekaj na połączenie (max 10 sekund)
-            for (int i = 0; i < 10; i++)
+            // Retry up to 3 times
+            for (int attempt = 1; attempt <= 3; attempt++)
             {
-                await Task.Delay(1000);
-                if (CheckIfConnected())
+                Debug.WriteLine($"Connection attempt {attempt}/3...");
+
+                await ConnectViaSettingsAsync();
+
+                // Wait for stable connection (max 12 seconds per attempt)
+                for (int i = 0; i < 12; i++)
                 {
-                    UpdateConnectionStatus(true);
-                    return ConnectionResult.Success;
+                    await Task.Delay(1000);
+                    if (CheckIfConnected())
+                    {
+                        // Verify connection is stable - check again after 2s
+                        await Task.Delay(2000);
+                        if (CheckIfConnected())
+                        {
+                            Debug.WriteLine($"Connected on attempt {attempt}");
+                            UpdateConnectionStatus(true);
+                            return ConnectionResult.Success;
+                        }
+                        Debug.WriteLine("Connection dropped, retrying...");
+                        break;
+                    }
                 }
             }
 
@@ -56,105 +70,106 @@ public class BluetoothConnectionService : IBluetoothConnectionService
         }
     }
 
-    private async Task ConnectViaUIAutomationAsync()
+    private async Task ConnectViaSettingsAsync()
     {
-        // Zapisz skrypt do pliku tymczasowego (unika problemów z kodowaniem)
         string scriptPath = Path.Combine(Path.GetTempPath(), "bt_connect.ps1");
 
         string script = @"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
-Add-Type -AssemblyName System.Windows.Forms
 
 $deviceName = 'WH-1000XM5'
 
-# Otwórz ustawienia Bluetooth
+# Open Bluetooth settings
 Start-Process 'ms-settings:bluetooth'
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 4
 
-# Znajdź okno ustawień
+# Find Settings window by name (PL: Ustawienia, EN: Settings)
 $root = [System.Windows.Automation.AutomationElement]::RootElement
-$allWindows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
-
 $settingsWindow = $null
+
+$allWindows = $root.FindAll(
+    [System.Windows.Automation.TreeScope]::Children,
+    [System.Windows.Automation.Condition]::TrueCondition
+)
 foreach ($win in $allWindows) {
     $name = $win.Current.Name
     if ($name -like '*stawienia*' -or $name -like '*etting*') {
         $settingsWindow = $win
-        Write-Host ""Found window: $name""
+        Write-Host ""Found Settings: '$name'""
         break
     }
 }
 
-if ($settingsWindow) {
-    # Przygotuj mouse click
-    Add-Type @'
-    using System;
-    using System.Runtime.InteropServices;
-    public class MouseOps {
-        [DllImport(""user32.dll"")]
-        public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
-        public static void Click() {
-            mouse_event(0x0002, 0, 0, 0, 0);
-            mouse_event(0x0004, 0, 0, 0, 0);
-        }
-    }
-'@
-
-    Start-Sleep -Seconds 1
-
-    # Znajdź wszystkie przyciski
-    $btnCondition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Button
-    )
-    $allButtons = $settingsWindow.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants,
-        $btnCondition
-    )
-
-    Write-Host ""Found $($allButtons.Count) buttons""
-
-    # Szukaj przycisku Connect/Polacz przy urzadzeniu
-    $foundDevice = $false
-    foreach ($btn in $allButtons) {
-        $btnName = $btn.Current.Name
-
-        # Sprawdz czy to nasze urzadzenie
-        if ($btnName -like ""*$deviceName*"") {
-            $foundDevice = $true
-            Write-Host ""Found device button: $btnName""
-        }
-
-        # Szukaj przycisku Connect/Połącz
-        if ($btnName -eq 'Connect' -or $btnName -eq 'Połącz' -or $btnName -eq 'Polacz') {
-
-            Write-Host ""Found Connect button: $btnName""
-
-            $rect = $btn.Current.BoundingRectangle
-            if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
-                $x = [int]($rect.X + $rect.Width / 2)
-                $y = [int]($rect.Y + $rect.Height / 2)
-
-                Write-Host ""Clicking at $x, $y""
-                [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
-                Start-Sleep -Milliseconds 200
-                [MouseOps]::Click()
-                Write-Host ""Clicked!""
-                break
-            }
-        }
-    }
-
-    # Zamknij po chwili
-    Start-Sleep -Seconds 3
-    Stop-Process -Name 'SystemSettings' -ErrorAction SilentlyContinue
-} else {
+if (-not $settingsWindow) {
     Write-Host 'Settings window not found'
+    exit 1
 }
+
+Start-Sleep -Seconds 1
+
+# Get ALL elements in the window
+$allElements = $settingsWindow.FindAll(
+    [System.Windows.Automation.TreeScope]::Descendants,
+    [System.Windows.Automation.Condition]::TrueCondition
+)
+
+Write-Host ""Total elements: $($allElements.Count)""
+
+# Find device and then the first Connect button after it
+$foundDevice = $false
+$clicked = $false
+
+foreach ($el in $allElements) {
+    $name = $el.Current.Name
+    $type = $el.Current.ControlType.ProgrammaticName
+
+    if (-not $name -or $name.Length -eq 0) { continue }
+
+    # Look for our device (appears as Group or Text element)
+    if ($name -like ""*$deviceName*"") {
+        $foundDevice = $true
+        Write-Host ""Found device: [$type] '$name'""
+        continue
+    }
+
+    # After finding device, look for Connect/Polacz button
+    if ($foundDevice -and $type -like '*Button*') {
+        # Match: Connect (EN), Polacz (PL), Verbinden (DE)
+        $autoId = $el.Current.AutomationId
+        $isConnect = ($name -eq 'Connect') -or
+                     ($name -match '(?i)^po\S*cz$') -or
+                     ($name -match '(?i)^verbind') -or
+                     ($autoId -match '_Button$' -and $name -notlike '*EntityItemButton*' -and $name -notlike '*Poka*')
+
+        if ($isConnect) {
+            Write-Host ""Found Connect button: '$name' AutoId='$autoId' - invoking""
+
+            try {
+                $invokePattern = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                $invokePattern.Invoke()
+                Write-Host ""Clicked!""
+                $clicked = $true
+            } catch {
+                Write-Host ""InvokePattern failed: $($_.Exception.Message)""
+            }
+            break
+        }
+    }
+}
+
+if (-not $foundDevice) {
+    Write-Host ""Device '$deviceName' not found""
+}
+if ($foundDevice -and -not $clicked) {
+    Write-Host ""Device found but Connect button not clicked""
+}
+
+# Close Settings after connection initiated
+Start-Sleep -Seconds 5
+Stop-Process -Name 'SystemSettings' -ErrorAction SilentlyContinue
 ";
 
-        // Zapisz skrypt z kodowaniem UTF-8
         await File.WriteAllTextAsync(scriptPath, script, System.Text.Encoding.UTF8);
 
         var psi = new ProcessStartInfo
@@ -174,12 +189,11 @@ if ($settingsWindow) {
             string error = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
 
-            Debug.WriteLine($"UI Automation output: {output}");
+            Debug.WriteLine($"UI Automation output:\n{output}");
             if (!string.IsNullOrEmpty(error))
-                Debug.WriteLine($"UI Automation error: {error}");
+                Debug.WriteLine($"UI Automation error:\n{error}");
         }
 
-        // Usuń plik tymczasowy
         try { File.Delete(scriptPath); } catch { }
     }
 

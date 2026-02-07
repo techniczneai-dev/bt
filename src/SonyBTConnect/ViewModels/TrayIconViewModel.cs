@@ -30,14 +30,14 @@ public partial class TrayIconViewModel : ObservableObject
     private bool _isAutoStartEnabled;
 
     public string TooltipText => IsConnected
-        ? "Sony WH-1000XM5: Polaczony"
+        ? "Sony WH-1000XM5: Connected"
         : IsConnecting
-            ? "Sony WH-1000XM5: Laczenie..."
-            : "Sony WH-1000XM5: Rozlaczony (kliknij aby polaczyc)";
+            ? "Sony WH-1000XM5: Connecting..."
+            : "Sony WH-1000XM5: Disconnected (click to connect)";
 
     public string StatusText => IsConnected
-        ? "Polaczony"
-        : IsConnecting ? "Laczenie..." : "Rozlaczony";
+        ? "Connected"
+        : IsConnecting ? "Connecting..." : "Disconnected";
 
     // Kolor tla ikony: zielony = polaczony, czerwony = niepodlaczony, migajacy = laczenie
     public Brush IconBackground
