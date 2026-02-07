@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "e1/lAjPvkm4=",
+  "dgSpecHash": "mkqoU+AJttI=",
   "success": true,
-  "projectFilePath": "C:\\DEV\\WinApp\\SonyBTConnect\\src\\SonyBTConnect\\SonyBTConnect.csproj",
+  "projectFilePath": "C:\\DEV\\WinApp\\New folder\\bt\\src\\SonyBTConnect\\SonyBTConnect.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Home\\.nuget\\packages\\communitytoolkit.mvvm\\8.2.2\\communitytoolkit.mvvm.8.2.2.nupkg.sha512",
     "C:\\Users\\Home\\.nuget\\packages\\h.generatedicons.system.drawing\\2.1.3\\h.generatedicons.system.drawing.2.1.3.nupkg.sha512",

@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\DEV\\WinApp\\SonyBTConnect\\src\\SonyBTConnect\\SonyBTConnect.csproj": {}
+    "C:\\DEV\\WinApp\\New folder\\bt\\src\\SonyBTConnect\\SonyBTConnect.csproj": {}
   },
   "projects": {
-    "C:\\DEV\\WinApp\\SonyBTConnect\\src\\SonyBTConnect\\SonyBTConnect.csproj": {
+    "C:\\DEV\\WinApp\\New folder\\bt\\src\\SonyBTConnect\\SonyBTConnect.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\DEV\\WinApp\\SonyBTConnect\\src\\SonyBTConnect\\SonyBTConnect.csproj",
+        "projectUniqueName": "C:\\DEV\\WinApp\\New folder\\bt\\src\\SonyBTConnect\\SonyBTConnect.csproj",
         "projectName": "SonyBTConnect",
-        "projectPath": "C:\\DEV\\WinApp\\SonyBTConnect\\src\\SonyBTConnect\\SonyBTConnect.csproj",
+        "projectPath": "C:\\DEV\\WinApp\\New folder\\bt\\src\\SonyBTConnect\\SonyBTConnect.csproj",
         "packagesPath": "C:\\Users\\Home\\.nuget\\packages\\",
-        "outputPath": "C:\\DEV\\WinApp\\SonyBTConnect\\src\\SonyBTConnect\\obj\\",
+        "outputPath": "C:\\DEV\\WinApp\\New folder\\bt\\src\\SonyBTConnect\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
