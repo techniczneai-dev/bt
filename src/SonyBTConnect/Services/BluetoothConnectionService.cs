@@ -58,7 +58,9 @@ public class BluetoothConnectionService : IBluetoothConnectionService
 
     private async Task ConnectViaUIAutomationAsync()
     {
-        // Skrypt PowerShell z UI Automation
+        // Zapisz skrypt do pliku tymczasowego (unika problemów z kodowaniem)
+        string scriptPath = Path.Combine(Path.GetTempPath(), "bt_connect.ps1");
+
         string script = @"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -68,181 +70,83 @@ $deviceName = 'WH-1000XM5'
 
 # Otwórz ustawienia Bluetooth
 Start-Process 'ms-settings:bluetooth'
-Start-Sleep -Seconds 2
+Start-Sleep -Seconds 3
 
 # Znajdź okno ustawień
 $root = [System.Windows.Automation.AutomationElement]::RootElement
-$condition = New-Object System.Windows.Automation.PropertyCondition(
-    [System.Windows.Automation.AutomationElement]::NameProperty,
-    'Settings'
-)
-$settingsWindow = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
+$allWindows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
 
-if (-not $settingsWindow) {
-    $condition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ClassNameProperty,
-        'ApplicationFrameWindow'
-    )
-    $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $condition)
-    foreach ($win in $windows) {
-        if ($win.Current.Name -like '*Settings*' -or $win.Current.Name -like '*Ustawienia*') {
-            $settingsWindow = $win
-            break
-        }
+$settingsWindow = $null
+foreach ($win in $allWindows) {
+    $name = $win.Current.Name
+    if ($name -like '*stawienia*' -or $name -like '*etting*') {
+        $settingsWindow = $win
+        Write-Host ""Found window: $name""
+        break
     }
 }
 
 if ($settingsWindow) {
-    Write-Host 'Found Settings window'
-
-    # Przygotuj mouse_event
-    $signature = @'
-[DllImport(""user32.dll"")]
-public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+    # Przygotuj mouse click
+    Add-Type @'
+    using System;
+    using System.Runtime.InteropServices;
+    public class MouseOps {
+        [DllImport(""user32.dll"")]
+        public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, int dwExtraInfo);
+        public static void Click() {
+            mouse_event(0x0002, 0, 0, 0, 0);
+            mouse_event(0x0004, 0, 0, 0, 0);
+        }
+    }
 '@
-    $mouse = Add-Type -MemberDefinition $signature -Name 'MouseClick' -Namespace 'Win32API' -PassThru -ErrorAction SilentlyContinue
-    if (-not $mouse) { $mouse = [Win32API.MouseClick] }
 
-    # Szukaj elementu z nazwą urządzenia
     Start-Sleep -Seconds 1
 
-    $nameCondition = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::NameProperty,
-        $deviceName
+    # Znajdź wszystkie przyciski
+    $btnCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Button
     )
-
-    $deviceElement = $settingsWindow.FindFirst(
+    $allButtons = $settingsWindow.FindAll(
         [System.Windows.Automation.TreeScope]::Descendants,
-        $nameCondition
+        $btnCondition
     )
 
-    if ($deviceElement) {
-        Write-Host 'Found device element'
+    Write-Host ""Found $($allButtons.Count) buttons""
 
-        # Kliknij na urządzenie
-        $invokePattern = $deviceElement.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-        if ($invokePattern) {
-            $invokePattern.Invoke()
-            Start-Sleep -Milliseconds 500
-        } else {
-            # Spróbuj kliknąć przez pozycję
-            $rect = $deviceElement.Current.BoundingRectangle
-            $x = [int]($rect.X + $rect.Width / 2)
-            $y = [int]($rect.Y + $rect.Height / 2)
+    # Szukaj przycisku Connect/Polacz przy urzadzeniu
+    $foundDevice = $false
+    foreach ($btn in $allButtons) {
+        $btnName = $btn.Current.Name
 
-            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
-            Start-Sleep -Milliseconds 100
-            $mouse::mouse_event(0x0002, 0, 0, 0, 0) # MOUSEEVENTF_LEFTDOWN
-            $mouse::mouse_event(0x0004, 0, 0, 0, 0) # MOUSEEVENTF_LEFTUP
-            Start-Sleep -Milliseconds 500
+        # Sprawdz czy to nasze urzadzenie
+        if ($btnName -like ""*$deviceName*"") {
+            $foundDevice = $true
+            Write-Host ""Found device button: $btnName""
         }
 
         # Szukaj przycisku Connect/Połącz
-        Start-Sleep -Milliseconds 500
+        if ($btnName -eq 'Connect' -or $btnName -eq 'Połącz' -or $btnName -eq 'Polacz') {
 
-        # Szukaj przycisku Connect - przez typ Button i nazwe zawierajaca connect/polacz
-        $btnCondition = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::Button
-        )
-        $allButtons = $settingsWindow.FindAll(
-            [System.Windows.Automation.TreeScope]::Descendants,
-            $btnCondition
-        )
+            Write-Host ""Found Connect button: $btnName""
 
-        foreach ($btn in $allButtons) {
-            $btnName = $btn.Current.Name
-            if ($btnName -and ($btnName -like '*onnect*' -or $btnName -like '*łącz*' -or $btnName -like '*olacz*')) {
-                # Pomijamy Disconnect
-                if ($btnName -notlike '*isconnect*' -and $btnName -notlike '*ozłącz*' -and $btnName -notlike '*ozlacz*') {
-                    Write-Host ""Found Connect button: $btnName""
+            $rect = $btn.Current.BoundingRectangle
+            if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
+                $x = [int]($rect.X + $rect.Width / 2)
+                $y = [int]($rect.Y + $rect.Height / 2)
 
-                    # Sprobuj Invoke
-                    try {
-                        $invokePattern = $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                        if ($invokePattern) {
-                            $invokePattern.Invoke()
-                            Write-Host 'Clicked Connect via Invoke'
-                            break
-                        }
-                    } catch {
-                        # Kliknij myszka
-                        $rect = $btn.Current.BoundingRectangle
-                        if ($rect.Width -gt 0) {
-                            $x = [int]($rect.X + $rect.Width / 2)
-                            $y = [int]($rect.Y + $rect.Height / 2)
-                            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
-                            Start-Sleep -Milliseconds 100
-                            $mouse::mouse_event(0x0002, 0, 0, 0, 0)
-                            $mouse::mouse_event(0x0004, 0, 0, 0, 0)
-                            Write-Host 'Clicked Connect via mouse'
-                            break
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        Write-Host 'Device element not found, trying alternative method'
-
-        # Alternatywna metoda - szukaj wszystkich elementów i znajdź po tekście
-        $allCondition = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::IsEnabledProperty,
-            $true
-        )
-        $allElements = $settingsWindow.FindAll(
-            [System.Windows.Automation.TreeScope]::Descendants,
-            $allCondition
-        )
-
-        foreach ($elem in $allElements) {
-            if ($elem.Current.Name -like ""*$deviceName*"") {
-                Write-Host ""Found element with device name: $($elem.Current.Name)""
-
-                $rect = $elem.Current.BoundingRectangle
-                if ($rect.Width -gt 0) {
-                    $x = [int]($rect.X + $rect.Width / 2)
-                    $y = [int]($rect.Y + $rect.Height / 2)
-
-                    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
-                    Start-Sleep -Milliseconds 100
-                    $mouse::mouse_event(0x0002, 0, 0, 0, 0)
-                    $mouse::mouse_event(0x0004, 0, 0, 0, 0)
-
-                    Start-Sleep -Seconds 1
-
-                    # Szukaj Connect - przez wszystkie przyciski
-                    $btnCond = New-Object System.Windows.Automation.PropertyCondition(
-                        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                        [System.Windows.Automation.ControlType]::Button
-                    )
-                    $btns = $settingsWindow.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond)
-
-                    foreach ($b in $btns) {
-                        $bName = $b.Current.Name
-                        if ($bName -and ($bName -like '*onnect*' -or $bName -like '*łącz*' -or $bName -like '*olacz*')) {
-                            if ($bName -notlike '*isconnect*' -and $bName -notlike '*ozłącz*') {
-                                $rect2 = $b.Current.BoundingRectangle
-                                if ($rect2.Width -gt 0) {
-                                    $x2 = [int]($rect2.X + $rect2.Width / 2)
-                                    $y2 = [int]($rect2.Y + $rect2.Height / 2)
-                                    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x2, $y2)
-                                    Start-Sleep -Milliseconds 100
-                                    $mouse::mouse_event(0x0002, 0, 0, 0, 0)
-                                    $mouse::mouse_event(0x0004, 0, 0, 0, 0)
-                                    Write-Host ""Clicked Connect button: $bName""
-                                    break
-                                }
-                            }
-                        }
-                    }
-                    break
-                }
+                Write-Host ""Clicking at $x, $y""
+                [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
+                Start-Sleep -Milliseconds 200
+                [MouseOps]::Click()
+                Write-Host ""Clicked!""
+                break
             }
         }
     }
 
-    # Zamknij ustawienia po chwili
+    # Zamknij po chwili
     Start-Sleep -Seconds 3
     Stop-Process -Name 'SystemSettings' -ErrorAction SilentlyContinue
 } else {
@@ -250,10 +154,13 @@ public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, i
 }
 ";
 
+        // Zapisz skrypt z kodowaniem UTF-8
+        await File.WriteAllTextAsync(scriptPath, script, System.Text.Encoding.UTF8);
+
         var psi = new ProcessStartInfo
         {
             FileName = "powershell",
-            Arguments = $"-ExecutionPolicy Bypass -Command \"{script.Replace("\"", "\\\"")}\"",
+            Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -271,6 +178,9 @@ public static extern void mouse_event(int dwFlags, int dx, int dy, int dwData, i
             if (!string.IsNullOrEmpty(error))
                 Debug.WriteLine($"UI Automation error: {error}");
         }
+
+        // Usuń plik tymczasowy
+        try { File.Delete(scriptPath); } catch { }
     }
 
     private bool CheckIfConnected()
