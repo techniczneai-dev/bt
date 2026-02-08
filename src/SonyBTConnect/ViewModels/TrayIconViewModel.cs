@@ -128,19 +128,15 @@ public partial class TrayIconViewModel : ObservableObject
 
         try
         {
-            var result = await _bluetoothService.ConnectAsync();
-            System.Diagnostics.Debug.WriteLine($"Connect result: {result}");
+            await _bluetoothService.ConnectAsync();
         }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"ConnectAsync exception: {ex.Message}");
-        }
+        catch { }
         finally
         {
-            // Always reset UI - stop blinking, back to red if not connected
-            StopBlinking();
+            _blinkTimer.Stop();
+            _blinkState = false;
             IsConnecting = false;
-            IsConnected = _bluetoothService.IsConnected;
+            // Don't set IsConnected here - monitoring timer handles it every 1s
         }
     }
 
