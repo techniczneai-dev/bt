@@ -34,57 +34,66 @@ public class BluetoothConnectionService : IBluetoothConnectionService
                 return ConnectionResult.AlreadyConnected;
             }
 
-            // Open Settings once
+            // Close stale Settings, open fresh on BT page
+            CloseSettings();
+            await Task.Delay(500);
             OpenBluetoothSettings();
-            await Task.Delay(5000);
+
+            // First attempt: open Settings and click as soon as button appears
+            Debug.WriteLine("Attempt 1/3: waiting for Connect button...");
+            await ClickConnectButtonAsync(waitForButton: true);
 
             // Try up to 3 times: click Connect, wait 4s stable
+            // Do NOT fire UpdateConnectionStatus during checks - only on final result
             for (int attempt = 1; attempt <= 3; attempt++)
             {
-                Debug.WriteLine($"Attempt {attempt}/3: clicking Connect...");
-                await ClickConnectButtonAsync();
+                if (attempt > 1)
+                {
+                    Debug.WriteLine($"Attempt {attempt}/3: clicking Connect...");
+                    await ClickConnectButtonAsync(waitForButton: false);
+                }
 
-                // Wait for connection, then verify stable for 4 seconds
-                bool stableConnection = false;
+                // Wait for connection to appear (max 10s)
+                bool detected = false;
                 for (int wait = 0; wait < 10; wait++)
                 {
                     await Task.Delay(1000);
                     if (CheckIfConnected())
                     {
-                        Debug.WriteLine("Connected! Verifying stability for 4s...");
-                        UpdateConnectionStatus(true);
-
-                        bool stable = true;
-                        for (int s = 0; s < 4; s++)
-                        {
-                            await Task.Delay(1000);
-                            if (!CheckIfConnected())
-                            {
-                                Debug.WriteLine($"Connection dropped after {s + 1}s");
-                                UpdateConnectionStatus(false);
-                                stable = false;
-                                break;
-                            }
-                        }
-
-                        if (stable)
-                        {
-                            Debug.WriteLine($"Stable connection on attempt {attempt}");
-                            stableConnection = true;
-                            break;
-                        }
-                        // Not stable - break inner wait, will retry click
+                        detected = true;
                         break;
                     }
                 }
 
-                if (stableConnection)
+                if (!detected)
                 {
+                    Debug.WriteLine($"Attempt {attempt}: no connection detected");
+                    continue;
+                }
+
+                // Verify stable for 4 seconds
+                Debug.WriteLine("Connected! Verifying stability for 4s...");
+                bool stable = true;
+                for (int s = 0; s < 4; s++)
+                {
+                    await Task.Delay(1000);
+                    if (!CheckIfConnected())
+                    {
+                        Debug.WriteLine($"Connection dropped after {s + 1}s");
+                        stable = false;
+                        break;
+                    }
+                }
+
+                if (stable)
+                {
+                    Debug.WriteLine($"Stable connection on attempt {attempt}");
                     CloseSettings();
+                    UpdateConnectionStatus(true);
                     return ConnectionResult.Success;
                 }
 
-                Debug.WriteLine($"Attempt {attempt} failed, retrying...");
+                Debug.WriteLine($"Attempt {attempt} unstable, retrying...");
                 await Task.Delay(2000);
             }
 
@@ -113,74 +122,89 @@ public class BluetoothConnectionService : IBluetoothConnectionService
         catch { }
     }
 
-    private async Task ClickConnectButtonAsync()
+    private async Task ClickConnectButtonAsync(bool waitForButton = false)
     {
         string scriptPath = Path.Combine(Path.GetTempPath(), "bt_click.ps1");
 
+        string waitParam = waitForButton ? "1" : "0";
         string script = @"
+param([int]$WaitMode)
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
 $deviceName = 'WH-1000XM5'
 
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$settingsWindow = $null
+function Try-ClickConnect {
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    $settingsWindow = $null
 
-$allWindows = $root.FindAll(
-    [System.Windows.Automation.TreeScope]::Children,
-    [System.Windows.Automation.Condition]::TrueCondition
-)
-foreach ($win in $allWindows) {
-    $name = $win.Current.Name
-    if ($name -like '*stawienia*' -or $name -like '*etting*') {
-        $settingsWindow = $win
-        break
-    }
-}
-
-if (-not $settingsWindow) {
-    Write-Host 'Settings window not found'
-    exit 1
-}
-
-$allElements = $settingsWindow.FindAll(
-    [System.Windows.Automation.TreeScope]::Descendants,
-    [System.Windows.Automation.Condition]::TrueCondition
-)
-
-$foundDevice = $false
-
-foreach ($el in $allElements) {
-    $name = $el.Current.Name
-    $type = $el.Current.ControlType.ProgrammaticName
-
-    if (-not $name -or $name.Length -eq 0) { continue }
-
-    if ($name -like ""*$deviceName*"") {
-        $foundDevice = $true
-        Write-Host ""Found device: '$name'""
-        continue
-    }
-
-    if ($foundDevice -and $type -like '*Button*') {
-        $autoId = $el.Current.AutomationId
-        $isConnect = ($name -eq 'Connect') -or
-                     ($name -match '(?i)^po\S*cz$') -or
-                     ($name -match '(?i)^verbind') -or
-                     ($autoId -match '_Button$' -and $name -notlike '*EntityItemButton*' -and $name -notlike '*Poka*')
-
-        if ($isConnect) {
-            Write-Host ""Clicking: '$name'""
-            try {
-                $invokePattern = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-                $invokePattern.Invoke()
-                Write-Host ""Clicked!""
-            } catch {
-                Write-Host ""Failed: $($_.Exception.Message)""
-            }
+    $allWindows = $root.FindAll(
+        [System.Windows.Automation.TreeScope]::Children,
+        [System.Windows.Automation.Condition]::TrueCondition
+    )
+    foreach ($win in $allWindows) {
+        $name = $win.Current.Name
+        if ($name -like '*stawienia*' -or $name -like '*etting*') {
+            $settingsWindow = $win
             break
         }
     }
+
+    if (-not $settingsWindow) { return $false }
+
+    $allElements = $settingsWindow.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition
+    )
+
+    $foundDevice = $false
+
+    foreach ($el in $allElements) {
+        $name = $el.Current.Name
+        $type = $el.Current.ControlType.ProgrammaticName
+
+        if (-not $name -or $name.Length -eq 0) { continue }
+
+        if ($name -like ""*$deviceName*"") {
+            $foundDevice = $true
+            continue
+        }
+
+        if ($foundDevice -and $type -like '*Button*') {
+            $autoId = $el.Current.AutomationId
+            $isConnect = ($name -eq 'Connect') -or
+                         ($name -match '(?i)^po\S*cz$') -or
+                         ($name -match '(?i)^verbind') -or
+                         ($autoId -match '_Button$' -and $name -notlike '*EntityItemButton*' -and $name -notlike '*Poka*')
+
+            if ($isConnect) {
+                Write-Host ""Clicking: '$name'""
+                try {
+                    $invokePattern = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                    $invokePattern.Invoke()
+                    Write-Host ""Clicked!""
+                    return $true
+                } catch {
+                    Write-Host ""Failed: $($_.Exception.Message)""
+                    return $false
+                }
+            }
+        }
+    }
+    return $false
+}
+
+if ($WaitMode -eq 1) {
+    # Poll every second until button found (max 15s)
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 1
+        $result = Try-ClickConnect
+        if ($result) { exit 0 }
+        Write-Host ""Waiting for Settings to load... ($($i+1)s)""
+    }
+    Write-Host 'Timed out waiting for Connect button'
+} else {
+    Try-ClickConnect | Out-Null
 }
 ";
 
@@ -189,7 +213,7 @@ foreach ($el in $allElements) {
         var psi = new ProcessStartInfo
         {
             FileName = "powershell",
-            Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\"",
+            Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\" {waitParam}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
