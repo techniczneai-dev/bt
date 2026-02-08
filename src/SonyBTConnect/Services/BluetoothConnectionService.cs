@@ -34,33 +34,61 @@ public class BluetoothConnectionService : IBluetoothConnectionService
                 return ConnectionResult.AlreadyConnected;
             }
 
-            // Retry up to 3 times
+            // Open Settings once
+            OpenBluetoothSettings();
+            await Task.Delay(5000);
+
+            // Try up to 3 times: click Connect, wait 4s stable
             for (int attempt = 1; attempt <= 3; attempt++)
             {
-                Debug.WriteLine($"Connection attempt {attempt}/3...");
+                Debug.WriteLine($"Attempt {attempt}/3: clicking Connect...");
+                await ClickConnectButtonAsync();
 
-                await ConnectViaSettingsAsync();
-
-                // Wait for stable connection (max 12 seconds per attempt)
-                for (int i = 0; i < 12; i++)
+                // Wait for connection, then verify stable for 4 seconds
+                bool stableConnection = false;
+                for (int wait = 0; wait < 10; wait++)
                 {
                     await Task.Delay(1000);
                     if (CheckIfConnected())
                     {
-                        // Verify connection is stable - check again after 2s
-                        await Task.Delay(2000);
-                        if (CheckIfConnected())
+                        Debug.WriteLine("Connected! Verifying stability for 4s...");
+                        UpdateConnectionStatus(true);
+
+                        bool stable = true;
+                        for (int s = 0; s < 4; s++)
                         {
-                            Debug.WriteLine($"Connected on attempt {attempt}");
-                            UpdateConnectionStatus(true);
-                            return ConnectionResult.Success;
+                            await Task.Delay(1000);
+                            if (!CheckIfConnected())
+                            {
+                                Debug.WriteLine($"Connection dropped after {s + 1}s");
+                                UpdateConnectionStatus(false);
+                                stable = false;
+                                break;
+                            }
                         }
-                        Debug.WriteLine("Connection dropped, retrying...");
+
+                        if (stable)
+                        {
+                            Debug.WriteLine($"Stable connection on attempt {attempt}");
+                            stableConnection = true;
+                            break;
+                        }
+                        // Not stable - break inner wait, will retry click
                         break;
                     }
                 }
+
+                if (stableConnection)
+                {
+                    CloseSettings();
+                    return ConnectionResult.Success;
+                }
+
+                Debug.WriteLine($"Attempt {attempt} failed, retrying...");
+                await Task.Delay(2000);
             }
 
+            CloseSettings();
             return ConnectionResult.ConnectionFailed;
         }
         catch (Exception ex)
@@ -70,9 +98,24 @@ public class BluetoothConnectionService : IBluetoothConnectionService
         }
     }
 
-    private async Task ConnectViaSettingsAsync()
+    private void OpenBluetoothSettings()
     {
-        string scriptPath = Path.Combine(Path.GetTempPath(), "bt_connect.ps1");
+        Process.Start(new ProcessStartInfo("ms-settings:bluetooth") { UseShellExecute = true });
+    }
+
+    private void CloseSettings()
+    {
+        try
+        {
+            foreach (var p in Process.GetProcessesByName("SystemSettings"))
+                p.Kill();
+        }
+        catch { }
+    }
+
+    private async Task ClickConnectButtonAsync()
+    {
+        string scriptPath = Path.Combine(Path.GetTempPath(), "bt_click.ps1");
 
         string script = @"
 Add-Type -AssemblyName UIAutomationClient
@@ -80,11 +123,6 @@ Add-Type -AssemblyName UIAutomationTypes
 
 $deviceName = 'WH-1000XM5'
 
-# Open Bluetooth settings
-Start-Process 'ms-settings:bluetooth'
-Start-Sleep -Seconds 4
-
-# Find Settings window by name (PL: Ustawienia, EN: Settings)
 $root = [System.Windows.Automation.AutomationElement]::RootElement
 $settingsWindow = $null
 
@@ -96,7 +134,6 @@ foreach ($win in $allWindows) {
     $name = $win.Current.Name
     if ($name -like '*stawienia*' -or $name -like '*etting*') {
         $settingsWindow = $win
-        Write-Host ""Found Settings: '$name'""
         break
     }
 }
@@ -106,19 +143,12 @@ if (-not $settingsWindow) {
     exit 1
 }
 
-Start-Sleep -Seconds 1
-
-# Get ALL elements in the window
 $allElements = $settingsWindow.FindAll(
     [System.Windows.Automation.TreeScope]::Descendants,
     [System.Windows.Automation.Condition]::TrueCondition
 )
 
-Write-Host ""Total elements: $($allElements.Count)""
-
-# Find device and then the first Connect button after it
 $foundDevice = $false
-$clicked = $false
 
 foreach ($el in $allElements) {
     $name = $el.Current.Name
@@ -126,16 +156,13 @@ foreach ($el in $allElements) {
 
     if (-not $name -or $name.Length -eq 0) { continue }
 
-    # Look for our device (appears as Group or Text element)
     if ($name -like ""*$deviceName*"") {
         $foundDevice = $true
-        Write-Host ""Found device: [$type] '$name'""
+        Write-Host ""Found device: '$name'""
         continue
     }
 
-    # After finding device, look for Connect/Polacz button
     if ($foundDevice -and $type -like '*Button*') {
-        # Match: Connect (EN), Polacz (PL), Verbinden (DE)
         $autoId = $el.Current.AutomationId
         $isConnect = ($name -eq 'Connect') -or
                      ($name -match '(?i)^po\S*cz$') -or
@@ -143,31 +170,18 @@ foreach ($el in $allElements) {
                      ($autoId -match '_Button$' -and $name -notlike '*EntityItemButton*' -and $name -notlike '*Poka*')
 
         if ($isConnect) {
-            Write-Host ""Found Connect button: '$name' AutoId='$autoId' - invoking""
-
+            Write-Host ""Clicking: '$name'""
             try {
                 $invokePattern = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
                 $invokePattern.Invoke()
                 Write-Host ""Clicked!""
-                $clicked = $true
             } catch {
-                Write-Host ""InvokePattern failed: $($_.Exception.Message)""
+                Write-Host ""Failed: $($_.Exception.Message)""
             }
             break
         }
     }
 }
-
-if (-not $foundDevice) {
-    Write-Host ""Device '$deviceName' not found""
-}
-if ($foundDevice -and -not $clicked) {
-    Write-Host ""Device found but Connect button not clicked""
-}
-
-# Close Settings after connection initiated
-Start-Sleep -Seconds 5
-Stop-Process -Name 'SystemSettings' -ErrorAction SilentlyContinue
 ";
 
         await File.WriteAllTextAsync(scriptPath, script, System.Text.Encoding.UTF8);
@@ -189,9 +203,9 @@ Stop-Process -Name 'SystemSettings' -ErrorAction SilentlyContinue
             string error = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
 
-            Debug.WriteLine($"UI Automation output:\n{output}");
+            Debug.WriteLine($"Click output: {output.Trim()}");
             if (!string.IsNullOrEmpty(error))
-                Debug.WriteLine($"UI Automation error:\n{error}");
+                Debug.WriteLine($"Click error: {error.Trim()}");
         }
 
         try { File.Delete(scriptPath); } catch { }
