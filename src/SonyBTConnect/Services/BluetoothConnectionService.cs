@@ -178,10 +178,12 @@ function Try-ClickConnect {
 
         if ($foundDevice -and $type -like '*Button*') {
             $autoId = $el.Current.AutomationId
-            $isConnect = ($name -eq 'Connect') -or
+            $isDisconnect = ($name -eq 'Disconnect') -or ($name -match '(?i)^roz') -or ($name -match '(?i)^trenn')
+            $isConnect = (-not $isDisconnect) -and (
+                         ($name -eq 'Connect') -or
                          ($name -match '(?i)^po\S*cz$') -or
                          ($name -match '(?i)^verbind') -or
-                         ($autoId -match '_Button$' -and $name -notlike '*EntityItemButton*' -and $name -notlike '*Poka*')
+                         ($autoId -match '_Button$' -and $name -notlike '*EntityItemButton*' -and $name -notlike '*Poka*'))
 
             if ($isConnect) {
                 Write-Host ""Clicking: '$name'""
@@ -229,9 +231,18 @@ if ($WaitMode -eq 1) {
         using var process = Process.Start(psi);
         if (process != null)
         {
-            string output = await process.StandardOutput.ReadToEndAsync();
-            string error = await process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync();
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+
+            bool exited = process.WaitForExit(30000);
+            if (!exited)
+            {
+                Debug.WriteLine("Click script timed out (30s), killing...");
+                try { process.Kill(); } catch { }
+            }
+
+            string output = await outputTask;
+            string error = await errorTask;
 
             Debug.WriteLine($"Click output: {output.Trim()}");
             if (!string.IsNullOrEmpty(error))
