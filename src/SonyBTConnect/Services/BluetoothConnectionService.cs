@@ -34,22 +34,25 @@ public class BluetoothConnectionService : IBluetoothConnectionService
                 return ConnectionResult.AlreadyConnected;
             }
 
+            // Stop monitoring during connect - prevents timer events from crashing UI
+            StopMonitoring();
+
             // Close stale Settings, open fresh on BT page
             CloseSettings();
             await Task.Delay(500);
             OpenBluetoothSettings();
 
-            // First attempt: open Settings and click as soon as button appears
+            // First click: wait for Settings to load and button to appear
             Debug.WriteLine("Attempt 1/3: waiting for Connect button...");
             await ClickConnectButtonAsync(waitForButton: true);
 
-            // Try up to 3 times: click Connect, wait 4s stable
-            // Do NOT fire UpdateConnectionStatus during checks - only on final result
+            // Try up to 3 times
             for (int attempt = 1; attempt <= 3; attempt++)
             {
                 if (attempt > 1)
                 {
-                    Debug.WriteLine($"Attempt {attempt}/3: clicking Connect...");
+                    // Retry: click immediately (Settings still open)
+                    Debug.WriteLine($"Attempt {attempt}/3: clicking Connect immediately...");
                     await ClickConnectButtonAsync(waitForButton: false);
                 }
 
@@ -57,7 +60,7 @@ public class BluetoothConnectionService : IBluetoothConnectionService
                 bool detected = false;
                 for (int wait = 0; wait < 10; wait++)
                 {
-                    await Task.Delay(1000);
+                    await Task.Delay(500);
                     if (CheckIfConnected())
                     {
                         detected = true;
@@ -71,15 +74,15 @@ public class BluetoothConnectionService : IBluetoothConnectionService
                     continue;
                 }
 
-                // Verify stable for 4 seconds
+                // Verify stable for 4 seconds - check every 500ms
                 Debug.WriteLine("Connected! Verifying stability for 4s...");
                 bool stable = true;
-                for (int s = 0; s < 4; s++)
+                for (int s = 0; s < 8; s++)
                 {
-                    await Task.Delay(1000);
+                    await Task.Delay(500);
                     if (!CheckIfConnected())
                     {
-                        Debug.WriteLine($"Connection dropped after {s + 1}s");
+                        Debug.WriteLine($"Connection dropped! Retrying immediately...");
                         stable = false;
                         break;
                     }
@@ -92,9 +95,7 @@ public class BluetoothConnectionService : IBluetoothConnectionService
                     UpdateConnectionStatus(true);
                     return ConnectionResult.Success;
                 }
-
-                Debug.WriteLine($"Attempt {attempt} unstable, retrying...");
-                await Task.Delay(2000);
+                // Connection dropped - loop continues, clicks Connect again immediately
             }
 
             CloseSettings();
@@ -104,6 +105,11 @@ public class BluetoothConnectionService : IBluetoothConnectionService
         {
             Debug.WriteLine($"Connect error: {ex.Message}");
             return ConnectionResult.BluetoothError;
+        }
+        finally
+        {
+            // Always restart monitoring after connect attempt
+            StartMonitoring();
         }
     }
 

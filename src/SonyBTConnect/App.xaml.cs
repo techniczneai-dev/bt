@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Windows;
+using System.Windows.Threading;
 using H.NotifyIcon;
 using SonyBTConnect.Services;
 using SonyBTConnect.ViewModels;
@@ -16,19 +18,35 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // Utworz serwisy
+        // Catch all unhandled exceptions - don't let the app crash
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
         _bluetoothService = new BluetoothConnectionService();
         _startupService = new StartupService();
-
-        // Utworz ViewModel
         _viewModel = new TrayIconViewModel(_bluetoothService, _startupService);
 
-        // Pobierz TaskbarIcon z zasobow i ustaw DataContext
         _trayIcon = (TaskbarIcon)FindResource("TrayIcon");
         _trayIcon.DataContext = _viewModel;
-
-        // Wymus utworzenie ikony
         _trayIcon.ForceCreate();
+    }
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        Debug.WriteLine($"UI Exception: {e.Exception}");
+        e.Handled = true;
+    }
+
+    private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        Debug.WriteLine($"Unhandled Exception: {e.ExceptionObject}");
+    }
+
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        Debug.WriteLine($"Task Exception: {e.Exception}");
+        e.SetObserved();
     }
 
     protected override void OnExit(ExitEventArgs e)

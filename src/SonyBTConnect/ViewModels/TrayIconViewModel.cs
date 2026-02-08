@@ -90,15 +90,19 @@ public partial class TrayIconViewModel : ObservableObject
 
     private void OnConnectionStatusChanged(object? sender, bool connected)
     {
-        Application.Current?.Dispatcher.Invoke(() =>
+        try
         {
-            IsConnected = connected;
-            if (connected)
+            Application.Current?.Dispatcher.BeginInvoke(() =>
             {
-                StopBlinking();
-                IsConnecting = false;
-            }
-        });
+                IsConnected = connected;
+                if (connected)
+                {
+                    StopBlinking();
+                    IsConnecting = false;
+                }
+            });
+        }
+        catch { }
     }
 
     private void StartBlinking()
@@ -125,31 +129,18 @@ public partial class TrayIconViewModel : ObservableObject
         try
         {
             var result = await _bluetoothService.ConnectAsync();
-
-            switch (result)
-            {
-                case ConnectionResult.Success:
-                case ConnectionResult.AlreadyConnected:
-                    // Status zaktualizowany przez event
-                    break;
-
-                case ConnectionResult.DeviceNotFound:
-                    System.Diagnostics.Debug.WriteLine("Device not found");
-                    break;
-
-                case ConnectionResult.ConnectionFailed:
-                    System.Diagnostics.Debug.WriteLine("Connection failed");
-                    break;
-
-                case ConnectionResult.BluetoothError:
-                    System.Diagnostics.Debug.WriteLine("Bluetooth error");
-                    break;
-            }
+            System.Diagnostics.Debug.WriteLine($"Connect result: {result}");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"ConnectAsync exception: {ex.Message}");
         }
         finally
         {
+            // Always reset UI - stop blinking, back to red if not connected
             StopBlinking();
             IsConnecting = false;
+            IsConnected = _bluetoothService.IsConnected;
         }
     }
 
